@@ -27,7 +27,14 @@
  *      siliconpr0n.org(John McMaster, digshadow):
  *          YMF262 and VRC VII decaps and die shots.
  *
- * version: 1.8
+ * version: 1.8DBP
+ *
+ * This version was optimized for DOSBox-Pure with the following changes:
+ *   - Activate channel slots only when used
+ *   - Deactivate unused channel slots after a while
+ *
+ * If an activated channel becomes inactive, some tiny audio differences can be
+ * measured (but not heard).
  */
 
 #include <assert.h>
@@ -535,11 +542,13 @@ static void OPL3_EnvelopeCalc(opl3_slot *slot)
 static void OPL3_EnvelopeKeyOn(opl3_slot *slot, uint8_t type)
 {
     slot->key |= type;
+    slot->active = 255;
 }
 
 static void OPL3_EnvelopeKeyOff(opl3_slot *slot, uint8_t type)
 {
     slot->key &= ~type;
+    slot->active = 255;
 }
 
 /*
@@ -591,45 +600,47 @@ static void OPL3_PhaseGenerate(opl3_slot *slot)
     /* Rhythm mode */
     noise = chip->noise;
     slot->pg_phase_out = phase;
-    if (slot->slot_num == 13) /* hh */
+    if (slot->is_hhsdtc)
     {
-        chip->rm_hh_bit2 = (phase >> 2) & 1;
-        chip->rm_hh_bit3 = (phase >> 3) & 1;
-        chip->rm_hh_bit7 = (phase >> 7) & 1;
-        chip->rm_hh_bit8 = (phase >> 8) & 1;
-    }
-    if (slot->slot_num == 17 && (chip->rhy & 0x20)) /* tc */
-    {
-        chip->rm_tc_bit3 = (phase >> 3) & 1;
-        chip->rm_tc_bit5 = (phase >> 5) & 1;
-    }
-    if (chip->rhy & 0x20)
-    {
-        rm_xor = (chip->rm_hh_bit2 ^ chip->rm_hh_bit7)
-               | (chip->rm_hh_bit3 ^ chip->rm_tc_bit5)
-               | (chip->rm_tc_bit3 ^ chip->rm_tc_bit5);
-        switch (slot->slot_num)
+        if (slot->slot_num == 13) /* hh */
         {
-        case 13: /* hh */
-            slot->pg_phase_out = rm_xor << 9;
-            if (rm_xor ^ (noise & 1))
+            chip->rm_hh_bit2 = (phase >> 2) & 1;
+            chip->rm_hh_bit3 = (phase >> 3) & 1;
+            chip->rm_hh_bit7 = (phase >> 7) & 1;
+            chip->rm_hh_bit8 = (phase >> 8) & 1;
+        }
+        if (slot->slot_num == 17 && (chip->rhy & 0x20)) /* tc */
+        {
+            chip->rm_tc_bit3 = (phase >> 3) & 1;
+            chip->rm_tc_bit5 = (phase >> 5) & 1;
+        }
+        if (chip->rhy & 0x20)
+        {
+            rm_xor = (chip->rm_hh_bit2 ^ chip->rm_hh_bit7)
+                | (chip->rm_hh_bit3 ^ chip->rm_tc_bit5)
+                | (chip->rm_tc_bit3 ^ chip->rm_tc_bit5);
+            switch (slot->slot_num)
             {
-                slot->pg_phase_out |= 0xd0;
-            }
-            else
-            {
-                slot->pg_phase_out |= 0x34;
-            }
-            break;
-        case 16: /* sd */
-            slot->pg_phase_out = (chip->rm_hh_bit8 << 9)
-                               | ((chip->rm_hh_bit8 ^ (noise & 1)) << 8);
-            break;
-        case 17: /* tc */
-            slot->pg_phase_out = (rm_xor << 9) | 0x80;
-            break;
-        default:
-            break;
+            case 13: /* hh */
+                slot->pg_phase_out = rm_xor << 9;
+                if (rm_xor ^ (noise & 1))
+                {
+                    slot->pg_phase_out |= 0xd0;
+                }
+                else
+                {
+                    slot->pg_phase_out |= 0x34;
+                }
+                break;
+            case 16: /* sd */
+                slot->pg_phase_out = (chip->rm_hh_bit8 << 9)
+                                | ((chip->rm_hh_bit8 ^ (noise & 1)) << 8);
+                break;
+            case 17: /* tc */
+                slot->pg_phase_out = (rm_xor << 9) | 0x80;
+                break;
+            default:
+                break;
         }
     }
     n_bit = ((noise >> 14) ^ noise) & 0x01;
@@ -654,12 +665,14 @@ static void OPL3_SlotWrite20(opl3_slot *slot, uint8_t data)
     slot->reg_type = (data >> 5) & 0x01;
     slot->reg_ksr = (data >> 4) & 0x01;
     slot->reg_mult = data & 0x0f;
+    slot->active = 255;
 }
 
 static void OPL3_SlotWrite40(opl3_slot *slot, uint8_t data)
 {
     slot->reg_ksl = (data >> 6) & 0x03;
     slot->reg_tl = data & 0x3f;
+    slot->active = 255;
     OPL3_EnvelopeUpdateKSL(slot);
 }
 
@@ -667,6 +680,7 @@ static void OPL3_SlotWrite60(opl3_slot *slot, uint8_t data)
 {
     slot->reg_ar = (data >> 4) & 0x0f;
     slot->reg_dr = data & 0x0f;
+    slot->active = 255;
 }
 
 static void OPL3_SlotWrite80(opl3_slot *slot, uint8_t data)
@@ -677,6 +691,7 @@ static void OPL3_SlotWrite80(opl3_slot *slot, uint8_t data)
         slot->reg_sl = 0x1f;
     }
     slot->reg_rr = data & 0x0f;
+    slot->active = 255;
 }
 
 static void OPL3_SlotWriteE0(opl3_slot *slot, uint8_t data)
@@ -1270,6 +1285,7 @@ void OPL3_Reset(opl3_chip *chip, uint32_t samplerate)
         slot->eg_gen = envelope_gen_num_release;
         slot->trem = (uint8_t*)&chip->zeromod;
         slot->slot_num = slotnum;
+        slot->is_hhsdtc = (slotnum == 13 || slotnum == 16 || slotnum == 17);
     }
 
     /* (DOSBox Staging addition)

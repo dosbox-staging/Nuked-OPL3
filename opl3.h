@@ -27,7 +27,7 @@
  *      siliconpr0n.org(John McMaster, digshadow):
  *          YMF262 and VRC VII decaps and die shots.
  *
- * version: 1.8
+ * version: 1.8DBP
  */
 
 #ifndef OPL_OPL3_H
@@ -80,6 +80,8 @@ struct _opl3_slot {
     uint32_t pg_phase;
     uint16_t pg_phase_out;
     uint8_t slot_num;
+    uint8_t is_hhsdtc;
+    uint8_t active;
 };
 
 struct _opl3_channel {
